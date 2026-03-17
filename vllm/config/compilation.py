@@ -1014,6 +1014,11 @@ class CompilationConfig:
                     self.splitting_ops.append("vllm::unified_kv_cache_update")
                     self.splitting_ops.append("vllm::unified_mla_kv_cache_update")
 
+                # I64 token-routed expert dispatch must run in eager
+                # so expert_ids reflect real token IDs, not dummy zeros
+                # from CUDA graph capture.
+                self.splitting_ops.append("vllm::i64_token_routed_forward")
+
             elif len(self.splitting_ops) == 0:
                 if (
                     self.cudagraph_mode == CUDAGraphMode.PIECEWISE
