@@ -457,7 +457,7 @@ def fp8_mqa_logits_torch(
     )
     mask = mask_lo & mask_hi
 
-    score = torch.einsum("mhd,nd->hmn", q, k).float() * scale
+    score = torch.matmul(q.permute(1, 0, 2), k.T).float() * scale
     logits = (score.relu() * weights.unsqueeze(-1).transpose(0, 1)).sum(dim=0)
     logits = logits.masked_fill(~mask, float("-inf"))
 
