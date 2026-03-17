@@ -85,7 +85,7 @@ class RotaryEmbeddingBase(CustomOp):
         inv_freq = self._compute_inv_freq(self.base)
         t = torch.arange(self.max_position_embeddings, dtype=torch.float)
 
-        freqs = torch.einsum("i,j -> ij", t, inv_freq)
+        freqs = torch.outer(t, inv_freq)
         cos = freqs.cos()
         sin = freqs.sin()
         cache = torch.cat((cos, sin), dim=-1)

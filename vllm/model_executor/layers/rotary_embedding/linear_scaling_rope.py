@@ -91,7 +91,7 @@ class LinearScalingRotaryEmbedding(RotaryEmbedding):
             t = torch.arange(max_len, dtype=torch.float)
             t = t / scaling_factor
 
-            freqs = torch.einsum("i,j -> ij", t, inv_freq)
+            freqs = torch.outer(t, inv_freq)
             cos = freqs.cos()
             sin = freqs.sin()
             cache = torch.cat((cos, sin), dim=-1)

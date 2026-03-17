@@ -96,7 +96,7 @@ class FourierRotaryEmbedding(RotaryEmbedding):
         device = self.inv_freq.device
         t = torch.arange(self.max_position_embeddings, dtype=torch.float, device=device)
 
-        freqs = torch.einsum("j,i -> ji", t, self.inv_freq)
+        freqs = torch.outer(t, self.inv_freq)
         if self.fope_sep_head:
             pos_cos = freqs.cos().unsqueeze(0).expand(self.num_key_value_heads, -1, -1)
             pos_sin = freqs.sin().unsqueeze(0).expand(self.num_key_value_heads, -1, -1)
@@ -105,11 +105,11 @@ class FourierRotaryEmbedding(RotaryEmbedding):
             pos_sin = freqs.sin()
 
         if self.fope_sep_head:
-            sin = torch.einsum("htD, hDd -> thd", pos_sin, self.sin_coef.float())
-            cos = torch.einsum("htD, hDd -> thd", pos_cos, self.cos_coef.float())
+            sin = torch.bmm(pos_sin, self.sin_coef.float()).transpose(0, 1)
+            cos = torch.bmm(pos_cos, self.cos_coef.float()).transpose(0, 1)
         else:
-            sin = torch.einsum("tD, Dd -> td", pos_sin, self.sin_coef.float())
-            cos = torch.einsum("tD, Dd -> td", pos_cos, self.cos_coef.float())
+            sin = torch.matmul(pos_sin, self.sin_coef.float())
+            cos = torch.matmul(pos_cos, self.cos_coef.float())
 
         sin = F.pad(
             input=sin,

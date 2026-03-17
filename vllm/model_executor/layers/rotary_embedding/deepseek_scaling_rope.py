@@ -105,7 +105,7 @@ class DeepseekScalingRotaryEmbedding(RotaryEmbeddingBase):
             self.max_position_embeddings * self.scaling_factor,
             dtype=torch.float32,
         )
-        freqs = torch.einsum("i,j -> ij", t, inv_freq)
+        freqs = torch.outer(t, inv_freq)
         cos = freqs.cos() * self.mscale
         sin = freqs.sin() * self.mscale
         cache = torch.cat((cos, sin), dim=-1)
