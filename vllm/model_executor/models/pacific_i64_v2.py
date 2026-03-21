@@ -80,9 +80,9 @@ def _routed_proj(
     sorted_x = x[sort_idx]
 
     # bmm: [E, chunk, dim] @ [E, dim, out] → [E, chunk, out]
-    sorted_out = torch.bmm(
-        sorted_x.view(num_experts, chunk, dim), weight
-    ).reshape(N, -1)
+    sorted_out = torch.bmm(sorted_x.view(num_experts, chunk, dim), weight).reshape(
+        N, -1
+    )
 
     out = torch.zeros(N, sorted_out.shape[-1], device=x.device, dtype=sorted_out.dtype)
     out[sort_idx] = sorted_out
@@ -141,7 +141,9 @@ class SortSplitMLP(nn.Module):
         # bmm down: [E, chunk, inter] @ [E, inter, hidden]
         sorted_out = torch.bmm(activated, self.down_proj).reshape(N, self.hidden_size)
 
-        out = torch.zeros(N, self.hidden_size, device=hidden_states.device, dtype=sorted_out.dtype)
+        out = torch.zeros(
+            N, self.hidden_size, device=hidden_states.device, dtype=sorted_out.dtype
+        )
         out[sort_idx] = sorted_out
         return out
 
@@ -405,7 +407,9 @@ class ComplexityDecoderLayerV2(nn.Module):
                 ),
                 num_experts=num_experts,
                 rope_theta=getattr(config, "rope_theta", 10000.0),
-                max_position_embeddings=getattr(config, "max_position_embeddings", 2048),
+                max_position_embeddings=getattr(
+                    config, "max_position_embeddings", 2048
+                ),
                 quant_config=quant_config,
                 cache_config=cache_config,
                 prefix=f"{prefix}.self_attn",
@@ -413,6 +417,7 @@ class ComplexityDecoderLayerV2(nn.Module):
         else:
             # Fallback to standard GQA (for dense baseline)
             from .pacific_i64 import ComplexityAttention
+
             self.self_attn = ComplexityAttention(
                 config=config,
                 hidden_size=config.hidden_size,
@@ -421,7 +426,9 @@ class ComplexityDecoderLayerV2(nn.Module):
                     config, "num_key_value_heads", config.num_attention_heads
                 ),
                 rope_theta=getattr(config, "rope_theta", 10000.0),
-                max_position_embeddings=getattr(config, "max_position_embeddings", 2048),
+                max_position_embeddings=getattr(
+                    config, "max_position_embeddings", 2048
+                ),
                 quant_config=quant_config,
                 cache_config=cache_config,
                 prefix=f"{prefix}.self_attn",

@@ -91,7 +91,10 @@ _TEXT_GENERATION_MODELS = {
     "Cohere2ForCausalLM": ("commandr", "CohereForCausalLM"),
     "CwmForCausalLM": ("llama", "LlamaForCausalLM"),
     "DeepForCausalLM": ("pacific_i64", "DeepForCausalLM"),  # Pacific-i64
-    "DeepV2ForCausalLM": ("pacific_i64_v2", "DeepV2ForCausalLM"),  # Pacific-i64 v2 (RoutedGQA + SortSplit)
+    "DeepV2ForCausalLM": (
+        "pacific_i64_v2",
+        "DeepV2ForCausalLM",
+    ),  # Pacific-i64 v2 (RoutedGQA + SortSplit)
     "DbrxForCausalLM": ("dbrx", "DbrxForCausalLM"),
     "DeciLMForCausalLM": ("nemotron_nas", "DeciLMForCausalLM"),
     "DeepseekForCausalLM": ("deepseek_v2", "DeepseekForCausalLM"),
