@@ -7,8 +7,7 @@ Pacific-I64 v2 / Complexity model for vLLM inference.
 Extends v1 with Sort-and-Split dispatch and Routed GQA:
 - RoutedGQA: Q/O routed (E expert weight sets via bmm), K/V shared
 - SortSplitMLP: argsort → fixed split N/E → bmm dispatch, zero waste
-- INL Dynamics: PID-like control with velocity tracking
-- Mu-Guidance: accepted at attention interface (currently passthrough)
+- Mu-Guidance: cross-layer equilibrium signal
 
 GitHub: https://github.com/Complexity-ML/complexity-framework
 """
@@ -314,59 +313,24 @@ class RoutedGQAAttention(nn.Module):
 
 
 # =============================================================================
-# INL Dynamics (reused from v1)
+# Mu-Guidance
 # =============================================================================
 
 
-class INLDynamics(nn.Module):
-    """INL Dynamics controller — PID-like velocity tracking with mu output."""
+class MuGuidance(nn.Module):
+    """Mu-Guidance — learnable equilibrium with contextual projection."""
 
-    def __init__(
-        self,
-        hidden_size: int,
-        controller_hidden: int = 64,
-        dt: float = 0.1,
-        use_contextual_error: bool = False,
-    ):
+    def __init__(self, hidden_size: int, mu_min: float = 0.0, mu_max: float = 2.0):
         super().__init__()
-        self.hidden_size = hidden_size
-        self.dt = dt
-        self.use_contextual_error = use_contextual_error
-
-        self.alpha = nn.Parameter(torch.ones(hidden_size) * 0.9)
-        self.beta = nn.Parameter(torch.ones(hidden_size) * 0.1)
-        self.gate = nn.Parameter(torch.ones(hidden_size) * 0.5)
-        self.mu = nn.Parameter(torch.zeros(hidden_size))
+        self.mu = nn.Parameter(torch.full((hidden_size,), (mu_min + mu_max) / 2))
         self.mu_proj = nn.Linear(hidden_size, hidden_size, bias=False)
-        nn.init.normal_(self.mu_proj.weight, std=0.01)
+        nn.init.zeros_(self.mu_proj.weight)
+        self.mu_min = mu_min
+        self.mu_max = mu_max
 
-        self.controller_in = nn.Linear(hidden_size, controller_hidden, bias=True)
-        self.controller_out = nn.Linear(controller_hidden, hidden_size, bias=True)
-        nn.init.zeros_(self.controller_out.weight)
-        nn.init.zeros_(self.controller_out.bias)
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        velocity: torch.Tensor,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        alpha = self.alpha.clamp(0, 1)
-        beta = self.beta.clamp(0, 2)
-        gate = torch.sigmoid(self.gate)
-        mu = self.mu.clamp(0, 2)
-
-        if self.use_contextual_error:
-            error = hidden_states - mu * hidden_states
-        else:
-            error = hidden_states * (1.0 - mu)
-
-        ctrl = self.controller_out(F.silu(self.controller_in(error)))
-        new_velocity = alpha * velocity + beta * (error + ctrl) * self.dt
-        update = gate * new_velocity
-        output = hidden_states + update
-
-        mu_contextual = mu + self.mu_proj(hidden_states)
-        return output, new_velocity, mu_contextual
+    def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        mu_clamped = torch.clamp(self.mu, self.mu_min, self.mu_max)
+        return mu_clamped + self.mu_proj(hidden_states)
 
 
 # =============================================================================
@@ -375,7 +339,7 @@ class INLDynamics(nn.Module):
 
 
 class ComplexityDecoderLayerV2(nn.Module):
-    """Complexity v2 decoder layer: RoutedGQA → INL Dynamics → SortSplitMLP."""
+    """Complexity v2 decoder layer: RoutedGQA → Mu-Guidance → SortSplitMLP."""
 
     def __init__(
         self,
@@ -434,18 +398,8 @@ class ComplexityDecoderLayerV2(nn.Module):
                 prefix=f"{prefix}.self_attn",
             )
 
-        # INL Dynamics
-        use_dynamics = getattr(config, "use_inl_dynamics", True)
-        if use_dynamics:
-            use_contextual_error = getattr(config, "mlp_type", None) is None
-            self.dynamics = INLDynamics(
-                hidden_size=config.hidden_size,
-                controller_hidden=getattr(config, "dynamics_controller_hidden", 64),
-                dt=getattr(config, "dynamics_dt", 0.1),
-                use_contextual_error=use_contextual_error,
-            )
-        else:
-            self.dynamics = None
+        # Mu-Guidance
+        self.mu_guidance = MuGuidance(hidden_size=config.hidden_size)
 
         self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=rms_norm_eps)
 
@@ -470,10 +424,9 @@ class ComplexityDecoderLayerV2(nn.Module):
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
-        velocity_states: torch.Tensor,
         sort_idx: torch.Tensor | None = None,
         mu_prev: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # Attention
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -491,14 +444,10 @@ class ComplexityDecoderLayerV2(nn.Module):
                 hidden_states=hidden_states,
                 mu_prev=mu_prev,
             )
-
-        # INL Dynamics
-        mu_current = None
-        if self.dynamics is not None:
-            hidden_states, velocity_states, mu_current = self.dynamics(
-                hidden_states, velocity_states
-            )
         hidden_states = residual + hidden_states
+
+        # Mu-Guidance
+        mu_current = self.mu_guidance(hidden_states)
 
         # MLP
         residual = hidden_states
@@ -509,7 +458,7 @@ class ComplexityDecoderLayerV2(nn.Module):
             hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
-        return hidden_states, velocity_states, mu_current
+        return hidden_states, mu_current
 
 
 # =============================================================================
@@ -519,7 +468,7 @@ class ComplexityDecoderLayerV2(nn.Module):
 
 @support_torch_compile
 class ComplexityModelV2(nn.Module):
-    """Complexity v2 transformer: RoutedGQA + SortSplitMLP + INL Dynamics."""
+    """Complexity v2 transformer: RoutedGQA + SortSplitMLP + Mu-Guidance."""
 
     def __init__(
         self,
@@ -559,10 +508,8 @@ class ComplexityModelV2(nn.Module):
         else:
             self.norm = PPMissingLayer()
 
-        self.cascade_velocity = getattr(config, "mlp_type", None) is None
-
         self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
-            ["hidden_states", "velocity_states", "mu_prev"],
+            ["hidden_states", "mu_prev"],
             config.hidden_size,
         )
 
@@ -578,12 +525,10 @@ class ComplexityModelV2(nn.Module):
                 hidden_states = inputs_embeds
             else:
                 hidden_states = self.embed_tokens(input_ids)
-            velocity_states = torch.zeros_like(hidden_states)
             mu_prev = None
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
-            velocity_states = intermediate_tensors["velocity_states"]
             mu_prev = intermediate_tensors.get("mu_prev")
 
         # Precompute sort_idx once for all layers
@@ -598,22 +543,12 @@ class ComplexityModelV2(nn.Module):
             if isinstance(layer, PPMissingLayer):
                 continue
 
-            layer_v = (
-                velocity_states
-                if self.cascade_velocity
-                else torch.zeros_like(hidden_states)
-            )
-
-            hidden_states, velocity_states, mu_current = layer(
+            hidden_states, mu_current = layer(
                 positions=positions,
                 hidden_states=hidden_states,
-                velocity_states=layer_v,
                 sort_idx=sort_idx,
                 mu_prev=mu_prev,
             )
-
-            if not self.cascade_velocity:
-                velocity_states = torch.zeros_like(hidden_states)
 
             if mu_current is not None:
                 mu_prev = mu_current
@@ -622,7 +557,6 @@ class ComplexityModelV2(nn.Module):
             return IntermediateTensors(
                 {
                     "hidden_states": hidden_states,
-                    "velocity_states": velocity_states,
                     "mu_prev": mu_prev,
                 }
             )
@@ -643,7 +577,7 @@ class ComplexityV2ForCausalLM(nn.Module, SupportsPP):
     """
     Complexity v2 model for causal language modeling.
 
-    Sort-Split MoE + Routed GQA + INL Dynamics.
+    Sort-Split MoE + Routed GQA + Mu-Guidance.
     Compatible with vLLM inference engine.
     """
 
@@ -731,7 +665,7 @@ class ComplexityV2ForCausalLM(nn.Module, SupportsPP):
         Handles:
         - 3D routed tensors (q_proj_w, o_proj_w, gate_up_proj, down_proj)
         - Shared K/V (standard 2D)
-        - INL Dynamics controller remapping
+        - Mu-Guidance weight remapping
         - Tied embeddings
         """
         params_dict = dict(self.named_parameters())
@@ -742,9 +676,9 @@ class ComplexityV2ForCausalLM(nn.Module, SupportsPP):
             if not name.startswith("model.") and name != "lm_head.weight":
                 name = "model." + name
 
-            # Remap dynamics controller keys
-            name = name.replace(".dynamics.controller.0.", ".dynamics.controller_in.")
-            name = name.replace(".dynamics.controller.2.", ".dynamics.controller_out.")
+            # Remap old dynamics keys to mu_guidance
+            name = name.replace(".dynamics.mu", ".mu_guidance.mu")
+            name = name.replace(".dynamics.mu_proj.", ".mu_guidance.mu_proj.")
 
             # Skip rotary_emb.inv_freq — vLLM recomputes it
             if "rotary_emb.inv_freq" in name:

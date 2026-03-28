@@ -4,11 +4,11 @@
 """
 Pacific-I64 / Complexity model for vLLM inference.
 
-A decoder-only transformer with INL (Inertial Navigation Layer) dynamics
-for numerical stability and smooth token generation.
+A decoder-only transformer with Mu-Guidance for cross-layer top-down
+equilibrium signaling.
 
 Key innovations:
-- INL Dynamics: PID-like control with velocity tracking (alpha, beta, gate, mu)
+- Mu-Guidance: Cross-layer equilibrium signal (mu_prev → layer → mu_current)
 - Token-Routed MLP: Deterministic expert routing (token_id % num_experts)
 - Mu-Guided Attention: Top-down influence from previous layer's equilibrium
 
@@ -38,7 +38,7 @@ from vllm.model_executor.layers.logits_processor import LogitsProcessor
 from vllm.model_executor.layers.quantization import QuantizationConfig
 from vllm.model_executor.layers.rotary_embedding import get_rope
 from vllm.model_executor.layers.token_routed_i64 import (
-    INLDynamics,
+    MuGuidance,
     TokenRoutedMLP,
 )
 from vllm.model_executor.layers.vocab_parallel_embedding import (
@@ -106,7 +106,7 @@ class ComplexityAttention(nn.Module):
     """
     Complexity attention with mu-guidance and GQA support.
 
-    Mu-guidance: the mu vector from INL Dynamics biases Q/K/V
+    Mu-guidance: the mu vector from MuGuidance biases Q/K/V
     projections, providing top-down control from previous layers.
     """
 
@@ -249,7 +249,7 @@ class ComplexityAttention(nn.Module):
 
 
 class ComplexityDecoderLayer(nn.Module):
-    """Complexity decoder layer: Attention → INL Dynamics → MLP."""
+    """Complexity decoder layer: Attention → Mu-Guidance → MLP."""
 
     def __init__(
         self,
@@ -286,14 +286,7 @@ class ComplexityDecoderLayer(nn.Module):
             prefix=f"{prefix}.self_attn",
         )
 
-        # Framework-trained models (mlp_type in config) use non-contextual error
-        use_contextual_error = getattr(config, "mlp_type", None) is None
-        self.dynamics = INLDynamics(
-            hidden_size=config.hidden_size,
-            controller_hidden=getattr(config, "dynamics_controller_hidden", 64),
-            dt=getattr(config, "dynamics_dt", 0.1),
-            use_contextual_error=use_contextual_error,
-        )
+        self.mu_guidance = MuGuidance(hidden_size=config.hidden_size)
 
         self.post_attention_layernorm = RMSNorm(config.hidden_size, eps=rms_norm_eps)
 
@@ -317,10 +310,9 @@ class ComplexityDecoderLayer(nn.Module):
         self,
         positions: torch.Tensor,
         hidden_states: torch.Tensor,
-        velocity_states: torch.Tensor,
         token_ids: torch.Tensor | None = None,
         mu_prev: torch.Tensor | None = None,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         # Attention
         residual = hidden_states
         hidden_states = self.input_layernorm(hidden_states)
@@ -329,12 +321,10 @@ class ComplexityDecoderLayer(nn.Module):
             hidden_states=hidden_states,
             mu_prev=mu_prev,
         )
-
-        # INL Dynamics
-        hidden_states, velocity_states, mu_current = self.dynamics(
-            hidden_states, velocity_states
-        )
         hidden_states = residual + hidden_states
+
+        # Mu-Guidance
+        mu_current = self.mu_guidance(hidden_states)
 
         # MLP
         residual = hidden_states
@@ -345,7 +335,7 @@ class ComplexityDecoderLayer(nn.Module):
             hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
 
-        return hidden_states, velocity_states, mu_current
+        return hidden_states, mu_current
 
 
 # =============================================================================
@@ -355,7 +345,7 @@ class ComplexityDecoderLayer(nn.Module):
 
 @support_torch_compile
 class ComplexityModel(nn.Module):
-    """Complexity transformer model with INL dynamics threading."""
+    """Complexity transformer model with Mu-Guidance threading."""
 
     def __init__(
         self,
@@ -399,11 +389,8 @@ class ComplexityModel(nn.Module):
         else:
             self.norm = PPMissingLayer()
 
-        # Framework-trained models (mlp_type in config) do not cascade velocity
-        self.cascade_velocity = getattr(config, "mlp_type", None) is None
-
         self.make_empty_intermediate_tensors = make_empty_intermediate_tensors_factory(
-            ["hidden_states", "velocity_states", "mu_prev"],
+            ["hidden_states", "mu_prev"],
             config.hidden_size,
         )
 
@@ -419,12 +406,10 @@ class ComplexityModel(nn.Module):
                 hidden_states = inputs_embeds
             else:
                 hidden_states = self.embed_tokens(input_ids)
-            velocity_states = torch.zeros_like(hidden_states)
             mu_prev = None
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
-            velocity_states = intermediate_tensors["velocity_states"]
             mu_prev = intermediate_tensors.get("mu_prev")
 
         for i in range(self.start_layer, self.end_layer):
@@ -432,25 +417,13 @@ class ComplexityModel(nn.Module):
             if isinstance(layer, PPMissingLayer):
                 continue
 
-            # Reset velocity each layer for framework-trained models
-            layer_v = (
-                velocity_states
-                if self.cascade_velocity
-                else torch.zeros_like(hidden_states)
-            )
-
-            hidden_states, velocity_states, mu_current = layer(
+            hidden_states, mu_current = layer(
                 positions=positions,
                 hidden_states=hidden_states,
-                velocity_states=layer_v,
                 token_ids=input_ids,
                 mu_prev=mu_prev,
             )
 
-            if not self.cascade_velocity:
-                velocity_states = torch.zeros_like(hidden_states)
-
-            # Match i64 engine: mu_prev = mu_current (no clamp, no residual)
             if mu_current is not None:
                 mu_prev = mu_current
 
@@ -458,7 +431,6 @@ class ComplexityModel(nn.Module):
             return IntermediateTensors(
                 {
                     "hidden_states": hidden_states,
-                    "velocity_states": velocity_states,
                     "mu_prev": mu_prev,
                 }
             )
@@ -592,8 +564,9 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
             name = ckpt_name
             if not name.startswith("model.") and name != "lm_head.weight":
                 name = "model." + name
-            name = name.replace(".dynamics.controller.0.", ".dynamics.controller_in.")
-            name = name.replace(".dynamics.controller.2.", ".dynamics.controller_out.")
+            # Remap old dynamics keys to mu_guidance
+            name = name.replace(".dynamics.mu", ".mu_guidance.mu")
+            name = name.replace(".dynamics.mu_proj.", ".mu_guidance.mu_proj.")
 
             # Skip rotary_emb.inv_freq — vLLM recomputes it
             if "rotary_emb.inv_freq" in name:
