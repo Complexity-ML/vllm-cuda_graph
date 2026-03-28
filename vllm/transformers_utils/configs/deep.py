@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright INL Dynamics / Complexity-ML
 """Configuration for Complexity / Pacific-I64 models."""
 
-from transformers import PretrainedConfig
+from transformers import AutoConfig, AutoTokenizer, PretrainedConfig, PreTrainedTokenizerFast
 
 
 class DeepConfig(PretrainedConfig):
@@ -67,3 +67,8 @@ class DeepConfig(PretrainedConfig):
         self.use_cache = use_cache
         self.initializer_range = initializer_range
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
+
+
+# Register with transformers so AutoConfig and AutoTokenizer resolve "deep"
+AutoConfig.register("deep", DeepConfig)
+AutoTokenizer.register(DeepConfig, fast_tokenizer_class=PreTrainedTokenizerFast)
