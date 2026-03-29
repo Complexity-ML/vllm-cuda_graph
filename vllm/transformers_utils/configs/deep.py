@@ -2,7 +2,7 @@
 # SPDX-FileCopyrightText: Copyright INL Dynamics / Complexity-ML
 """Configuration for Complexity / Pacific-I64 models."""
 
-from transformers import AutoConfig, AutoTokenizer, PretrainedConfig, PreTrainedTokenizerFast
+from transformers import AutoConfig, AutoTokenizer, PretrainedConfig, PreTrainedTokenizer, PreTrainedTokenizerFast
 
 
 class DeepConfig(PretrainedConfig):
@@ -69,6 +69,24 @@ class DeepConfig(PretrainedConfig):
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
 
 
+# Dummy slow tokenizer — prevents transformers from trying convert_slow_tokenizer
+class _DeepSlowTokenizer(PreTrainedTokenizer):
+    vocab_files_names: dict[str, str] = {}
+
+    def get_vocab(self):
+        return {}
+
+    def _tokenize(self, text):
+        raise NotImplementedError("Use the fast tokenizer")
+
+    def save_vocabulary(self, save_directory, filename_prefix=None):
+        return ()
+
+
 # Register with transformers so AutoConfig and AutoTokenizer resolve "deep"
 AutoConfig.register("deep", DeepConfig)
-AutoTokenizer.register(DeepConfig, fast_tokenizer_class=PreTrainedTokenizerFast)
+AutoTokenizer.register(
+    DeepConfig,
+    slow_tokenizer_class=_DeepSlowTokenizer,
+    fast_tokenizer_class=PreTrainedTokenizerFast,
+)
