@@ -120,12 +120,9 @@ class TokenRoutedMLP(nn.Module):
         nn.init.zeros_(self.mu_router.weight)
 
         # Deterministic I64 token -> expert mapping
-        # Defaults to modulo routing; overwritten by checkpoint if Zipf-balanced.
-        # Stored as plain attribute (not buffer/Parameter) to avoid
-        # torch.compile pickle serialization issues.
-        self._token_to_expert_map = (
-            torch.arange(vocab_size, dtype=torch.long) % num_experts
-        )
+        # NOTE: NOT a buffer — computed on-the-fly via modulo to avoid
+        # vLLM's init_empty_weights() meta-device issue (buffer would be
+        # uninitialized garbage on GPU after weight loading).
 
         # Init weights
         nn.init.kaiming_uniform_(self.gate_up_proj, a=5**0.5)
@@ -151,7 +148,7 @@ class TokenRoutedMLP(nn.Module):
             token_ids,
             self.local_num_experts,
             self.intermediate_per_tp,
-            self.local_num_experts,  # vocab_size = num_experts since IDs are pre-mapped
+            self.vocab_size,
             self.mu_router.weight,
             mu,
         )
@@ -182,24 +179,18 @@ class TokenRoutedMLP(nn.Module):
                 num_tokens, self.hidden_size, dtype=x.dtype, device=x.device
             )
 
-        # Pre-map token IDs to expert IDs via Zipf-balanced routing table
-        # This happens outside the custom op so the buffer isn't passed through
-        # torch.compile's pickle serialization.
-        token_ids_clamped = token_ids.clamp(0, self.vocab_size - 1)
-        expert_ids = self._token_to_expert_map.to(token_ids.device)[token_ids_clamped]
-
         if self.use_ep:
-            # EP path: routing + mu bias here for all-to-all dispatch
+            # EP path: routing must happen here for all-to-all dispatch
+            token_ids_clamped = token_ids.clamp(0, self.vocab_size - 1)
+            expert_ids = (token_ids_clamped % self.num_experts).long()
             mu_logits = self.mu_router(mu)
             base_one_hot = F.one_hot(expert_ids, self.num_experts).float()
             combined_logits = base_one_hot * self._BASE_ROUTING_SCALE + mu_logits
             expert_ids = combined_logits.argmax(dim=-1)
             output = self._forward_ep(x, expert_ids)
         else:
-            # TP path: pass expert_ids as token_ids to custom op
-            # The custom op will do expert_ids % num_experts which is identity
-            # since expert_ids are already in [0, num_experts)
-            output = self._forward_local(x, expert_ids, mu)
+            # TP path: routing inside custom op (CUDA graph safe)
+            output = self._forward_local(x, token_ids, mu)
 
         # Shared expert: dense SwiGLU applied to all tokens, added to expert output
         if self.use_shared_expert:

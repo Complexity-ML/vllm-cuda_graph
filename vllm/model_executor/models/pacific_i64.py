@@ -406,6 +406,7 @@ class ComplexityModel(nn.Module):
         positions: torch.Tensor,
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,
+        expert_ids: torch.Tensor | None = None,
     ) -> torch.Tensor | IntermediateTensors:
         if get_pp_group().is_first_rank:
             if inputs_embeds is not None:
@@ -422,6 +423,9 @@ class ComplexityModel(nn.Module):
             hidden_states = intermediate_tensors["hidden_states"]
             mu_prev = intermediate_tensors.get("mu_prev")
 
+        # Use pre-mapped expert_ids for routing (Zipf), fall back to input_ids (modulo)
+        routing_ids = expert_ids if expert_ids is not None else input_ids
+
         for i in range(self.start_layer, self.end_layer):
             layer = self.layers[i]
             if isinstance(layer, PPMissingLayer):
@@ -430,7 +434,7 @@ class ComplexityModel(nn.Module):
             hidden_states, mu_current = layer(
                 positions=positions,
                 hidden_states=hidden_states,
-                token_ids=input_ids,
+                token_ids=routing_ids,
                 mu_prev=mu_prev,
             )
 
@@ -525,6 +529,14 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
             self.model.make_empty_intermediate_tensors
         )
 
+        # Zipf-balanced token→expert mapping (stored here, outside torch.compile)
+        # Default to modulo; overwritten by load_weights if checkpoint has Zipf map
+        num_experts = getattr(config, "num_experts", 4)
+        vocab_size = config.vocab_size
+        self._zipf_map = (
+            torch.arange(vocab_size, dtype=torch.long) % num_experts
+        )
+
     def forward(
         self,
         input_ids: torch.Tensor | None,
@@ -532,11 +544,18 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,
     ) -> torch.Tensor | IntermediateTensors:
+        # Pre-map token IDs to expert IDs via Zipf routing (outside torch.compile)
+        expert_ids = None
+        if input_ids is not None and hasattr(self, "_zipf_map"):
+            zipf = self._zipf_map.to(input_ids.device)
+            expert_ids = zipf[input_ids.clamp(0, len(zipf) - 1)]
+
         hidden_states = self.model(
             input_ids=input_ids,
             positions=positions,
             intermediate_tensors=intermediate_tensors,
             inputs_embeds=inputs_embeds,
+            expert_ids=expert_ids,
         )
         return hidden_states
 
@@ -584,11 +603,9 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
                 continue
 
             # Load token_to_expert mapping (Zipf-balanced routing)
+            # Only need one copy — all layers share the same mapping
             if "token_to_expert" in name:
-                layer_idx = int(name.split(".layers.")[1].split(".")[0])
-                mlp = self.model.layers[layer_idx].mlp
-                if isinstance(mlp, TokenRoutedMLP):
-                    mlp._token_to_expert_map = loaded_weight.long()
+                self._zipf_map = loaded_weight.long()
                 continue
 
             # Tied embeddings: lm_head.weight → embed_tokens
