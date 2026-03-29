@@ -578,7 +578,9 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
                 layer_idx = int(name.split(".layers.")[1].split(".")[0])
                 mlp = self.model.layers[layer_idx].mlp
                 if isinstance(mlp, TokenRoutedMLP) and hasattr(mlp, "token_to_expert"):
-                    mlp.token_to_expert.copy_(loaded_weight)
+                    mlp.token_to_expert = loaded_weight.to(
+                        device=mlp.gate_up_proj.device, dtype=torch.long
+                    )
                     loaded_params.add(name)
                 continue
 
