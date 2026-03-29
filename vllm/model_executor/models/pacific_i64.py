@@ -443,11 +443,10 @@ class ComplexityModel(nn.Module):
             if mu_current is not None:
                 mu_prev = mu_current
 
-            # DEBUG: log after layers during prefill
-            if i == 0 and hidden_states.shape[0] == 5:
-                logger.info(f"DEBUG PREFILL after layer 0 h[last,:5]: {hidden_states[-1,:5].float().tolist()}")
-            if i == 17 and hidden_states.shape[0] == 5:
-                logger.info(f"DEBUG PREFILL after layer 17 h[last,:5]: {hidden_states[-1,:5].float().tolist()}")
+            # DEBUG: log after every layer during prefill
+            if hidden_states.shape[0] == 5:
+                n = hidden_states[-1,:3].float().tolist()
+                logger.info(f"DEBUG L{i:2d}: {n[0]:+.4f} {n[1]:+.4f} {n[2]:+.4f}")
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors(
