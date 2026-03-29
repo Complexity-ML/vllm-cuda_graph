@@ -583,17 +583,12 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
             if "rotary_emb.inv_freq" in name:
                 continue
 
-            # Load token_to_expert mapping (Zipf-balanced routing)
+            # Load token_to_expert mapping (Zipf-balanced routing buffer)
             if "token_to_expert" in name:
                 layer_idx = int(name.split(".layers.")[1].split(".")[0])
                 mlp = self.model.layers[layer_idx].mlp
-                if isinstance(mlp, TokenRoutedMLP):
-                    param_name = f"model.layers.{layer_idx}.mlp.token_to_expert"
-                    if param_name in params_dict:
-                        param = params_dict[param_name]
-                        with torch.no_grad():
-                            param.copy_(loaded_weight.float())
-                        loaded_params.add(param_name)
+                if isinstance(mlp, TokenRoutedMLP) and hasattr(mlp, "token_to_expert"):
+                    mlp.token_to_expert.copy_(loaded_weight.long())
                 continue
 
             # Tied embeddings: lm_head.weight → embed_tokens

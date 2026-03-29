@@ -121,11 +121,9 @@ class TokenRoutedMLP(nn.Module):
 
         # Deterministic I64 token -> expert mapping
         # Defaults to modulo routing; overwritten by checkpoint if Zipf-balanced.
-        # Must be a Parameter (not buffer) so vLLM's init_empty_weights() doesn't
-        # leave it on meta device. Frozen — never trained.
-        self.token_to_expert = nn.Parameter(
-            (torch.arange(vocab_size, dtype=torch.long) % num_experts).float(),
-            requires_grad=False,
+        self.register_buffer(
+            "token_to_expert",
+            torch.arange(vocab_size, dtype=torch.long) % num_experts,
         )
 
         # Init weights
@@ -188,7 +186,7 @@ class TokenRoutedMLP(nn.Module):
         if self.use_ep:
             # EP path: routing must happen here for all-to-all dispatch
             token_ids_clamped = token_ids.clamp(0, self.vocab_size - 1)
-            expert_ids = self.token_to_expert[token_ids_clamped].long()
+            expert_ids = self.token_to_expert[token_ids_clamped]
             mu_logits = self.mu_router(mu)
             base_one_hot = F.one_hot(expert_ids, self.num_experts).float()
             combined_logits = base_one_hot * self._BASE_ROUTING_SCALE + mu_logits
