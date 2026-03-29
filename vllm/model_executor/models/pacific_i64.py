@@ -655,6 +655,7 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
 
             # Standard parameter loading
             if name not in params_dict:
+                logger.warning(f"Skipped checkpoint key (no match): {ckpt_name} -> {name}")
                 continue
             param = params_dict[name]
             weight_loader = getattr(param, "weight_loader", default_weight_loader)
@@ -706,6 +707,13 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
             if dn_name in params_dict:
                 mlp.load_tp_weight("down_proj", params_dict[dn_name], down_full)
                 loaded_params.add(dn_name)
+
+        # Log unloaded params
+        all_params = set(params_dict.keys())
+        not_loaded = all_params - loaded_params
+        if not_loaded:
+            logger.warning(f"Params NOT loaded from checkpoint ({len(not_loaded)}): {sorted(not_loaded)}")
+        logger.info(f"Loaded {len(loaded_params)}/{len(all_params)} params")
 
         return loaded_params
 
