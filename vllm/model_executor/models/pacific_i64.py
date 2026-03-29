@@ -583,12 +583,12 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
             if "rotary_emb.inv_freq" in name:
                 continue
 
-            # Load token_to_expert mapping (Zipf-balanced routing buffer)
+            # Load token_to_expert mapping (Zipf-balanced routing)
             if "token_to_expert" in name:
                 layer_idx = int(name.split(".layers.")[1].split(".")[0])
                 mlp = self.model.layers[layer_idx].mlp
-                if isinstance(mlp, TokenRoutedMLP) and hasattr(mlp, "token_to_expert"):
-                    mlp.token_to_expert.copy_(loaded_weight.long())
+                if isinstance(mlp, TokenRoutedMLP):
+                    mlp._token_to_expert_map = loaded_weight.long()
                 continue
 
             # Tied embeddings: lm_head.weight → embed_tokens

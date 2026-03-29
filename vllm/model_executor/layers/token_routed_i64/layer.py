@@ -121,9 +121,10 @@ class TokenRoutedMLP(nn.Module):
 
         # Deterministic I64 token -> expert mapping
         # Defaults to modulo routing; overwritten by checkpoint if Zipf-balanced.
-        self.register_buffer(
-            "token_to_expert",
-            torch.arange(vocab_size, dtype=torch.long) % num_experts,
+        # Stored as plain attribute (not buffer/Parameter) to avoid
+        # torch.compile pickle serialization issues.
+        self._token_to_expert_map = (
+            torch.arange(vocab_size, dtype=torch.long) % num_experts
         )
 
         # Init weights
@@ -185,7 +186,7 @@ class TokenRoutedMLP(nn.Module):
         # This happens outside the custom op so the buffer isn't passed through
         # torch.compile's pickle serialization.
         token_ids_clamped = token_ids.clamp(0, self.vocab_size - 1)
-        expert_ids = self.token_to_expert[token_ids_clamped]
+        expert_ids = self._token_to_expert_map.to(token_ids.device)[token_ids_clamped]
 
         if self.use_ep:
             # EP path: routing + mu bias here for all-to-all dispatch
