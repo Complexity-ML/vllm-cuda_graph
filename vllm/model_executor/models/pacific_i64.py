@@ -432,7 +432,7 @@ class ComplexityModel(nn.Module):
             )
 
             if mu_current is not None:
-                mu_prev = mu_current
+                mu_prev = torch.clamp(mu_current, -2.0, 2.0)
 
 
         if not get_pp_group().is_last_rank:
