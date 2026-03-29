@@ -418,10 +418,11 @@ class ComplexityModel(nn.Module):
                 mu_prev = self.mu_init.squeeze(0).expand(num_tokens, -1)
 
             # DEBUG: compare with framework reference values
-            if num_tokens <= 10:
-                logger.info(f"DEBUG input_ids: {input_ids[:10].tolist()}")
-                logger.info(f"DEBUG Embedding[0,:5]: {hidden_states[0,:5].float().tolist()}")
-                logger.info(f"DEBUG mu_init[:5]: {mu_prev[0,:5].float().tolist() if mu_prev is not None else 'None'}")
+            _debug_prefill = (num_tokens == 5)
+            if _debug_prefill:
+                logger.info(f"DEBUG PREFILL input_ids: {input_ids.tolist()}")
+                logger.info(f"DEBUG PREFILL Embedding[0,:5]: {hidden_states[0,:5].float().tolist()}")
+                logger.info(f"DEBUG PREFILL mu_init[:5]: {mu_prev[0,:5].float().tolist() if mu_prev is not None else 'None'}")
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
@@ -442,9 +443,11 @@ class ComplexityModel(nn.Module):
             if mu_current is not None:
                 mu_prev = mu_current
 
-            # DEBUG: log after first layer
-            if i == 0 and hidden_states.shape[0] <= 10:
-                logger.info(f"DEBUG after layer 0 h[:5]: {hidden_states[0,:5].float().tolist()}")
+            # DEBUG: log after layers during prefill
+            if i == 0 and hidden_states.shape[0] == 5:
+                logger.info(f"DEBUG PREFILL after layer 0 h[last,:5]: {hidden_states[-1,:5].float().tolist()}")
+            if i == 17 and hidden_states.shape[0] == 5:
+                logger.info(f"DEBUG PREFILL after layer 17 h[last,:5]: {hidden_states[-1,:5].float().tolist()}")
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors(
@@ -455,6 +458,8 @@ class ComplexityModel(nn.Module):
             )
 
         hidden_states = self.norm(hidden_states)
+        if hidden_states.shape[0] == 5:
+            logger.info(f"DEBUG PREFILL after norm h[last,:5]: {hidden_states[-1,:5].float().tolist()}")
         return hidden_states
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
