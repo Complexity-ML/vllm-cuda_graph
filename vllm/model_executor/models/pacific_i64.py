@@ -416,6 +416,12 @@ class ComplexityModel(nn.Module):
             if self._has_mu and hasattr(self, "mu_init"):
                 num_tokens = hidden_states.shape[0]
                 mu_prev = self.mu_init.squeeze(0).expand(num_tokens, -1)
+
+            # DEBUG: compare with framework reference values
+            if num_tokens <= 10:
+                logger.info(f"DEBUG input_ids: {input_ids[:10].tolist()}")
+                logger.info(f"DEBUG Embedding[0,:5]: {hidden_states[0,:5].float().tolist()}")
+                logger.info(f"DEBUG mu_init[:5]: {mu_prev[0,:5].float().tolist() if mu_prev is not None else 'None'}")
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
@@ -435,6 +441,10 @@ class ComplexityModel(nn.Module):
 
             if mu_current is not None:
                 mu_prev = mu_current
+
+            # DEBUG: log after first layer
+            if i == 0 and hidden_states.shape[0] <= 10:
+                logger.info(f"DEBUG after layer 0 h[:5]: {hidden_states[0,:5].float().tolist()}")
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors(
