@@ -86,6 +86,7 @@ def i64_token_routed_forward(
     vocab_size: int,
     mu_router_weight: torch.Tensor,
     mu: torch.Tensor,
+    token_to_expert: torch.Tensor,
 ) -> torch.Tensor:
     """
     Custom op entry point — computes routing + expert forward.
@@ -93,18 +94,12 @@ def i64_token_routed_forward(
     Routing is done HERE so it runs in eager mode during CUDA graph
     replay (this op is in splitting_ops). If routing were done outside,
     it would be captured with dummy token_ids (all zeros) → expert 0.
-
-    Note: token_ids are PRE-MAPPED expert IDs when Zipf routing is used
-    (the layer maps them before calling this op). For modulo routing,
-    raw token IDs are passed and mapped here.
     """
     # === I64 Routing (inside splitting op = eager) ===
     token_ids_clamped = token_ids.clamp(0, vocab_size - 1)
-    expert_ids = (token_ids_clamped % num_experts).long()
+    expert_ids = token_to_expert[token_ids_clamped].long()
 
     # Mu-guided bias — always compute (no CPU sync like .any())
-    # When mu is zeros, mu_logits is zeros, base_one_hot * 10.0 dominates,
-    # argmax returns the same expert as base → no-op, CUDA graph safe.
     mu_logits = F.linear(mu, mu_router_weight)  # (N, num_experts)
     base_one_hot = F.one_hot(expert_ids, num_experts).float()
     combined_logits = base_one_hot * 10.0 + mu_logits
@@ -130,6 +125,7 @@ def i64_token_routed_forward_fake(
     vocab_size: int,
     mu_router_weight: torch.Tensor,
     mu: torch.Tensor,
+    token_to_expert: torch.Tensor,
 ) -> torch.Tensor:
     """Fake impl for torch.compile — returns tensor of correct shape."""
     return torch.empty_like(x)
