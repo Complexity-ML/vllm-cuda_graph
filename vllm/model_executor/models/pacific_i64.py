@@ -384,11 +384,6 @@ class ComplexityModel(nn.Module):
                 continue
             layer._layer_idx = i
 
-        # Learnable mu_init: gives layer 0 a mu_prev instead of None
-        self._has_mu = getattr(config, "use_mu_guidance", False)
-        if self._has_mu and not getattr(config, "disable_mu_guidance", False):
-            self.mu_init = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
-
         rms_norm_eps = getattr(config, "rms_norm_eps", 1e-6)
         if get_pp_group().is_last_rank:
             self.norm = RMSNorm(config.hidden_size, eps=rms_norm_eps)
@@ -407,16 +402,14 @@ class ComplexityModel(nn.Module):
         intermediate_tensors: IntermediateTensors | None = None,
         inputs_embeds: torch.Tensor | None = None,
         expert_ids: torch.Tensor | None = None,
+        mu_init_expanded: torch.Tensor | None = None,
     ) -> torch.Tensor | IntermediateTensors:
         if get_pp_group().is_first_rank:
             if inputs_embeds is not None:
                 hidden_states = inputs_embeds
             else:
                 hidden_states = self.embed_tokens(input_ids)
-            mu_prev = None
-            if self._has_mu and hasattr(self, "mu_init"):
-                num_tokens = hidden_states.shape[0]
-                mu_prev = self.mu_init.squeeze(0).expand(num_tokens, -1)
+            mu_prev = mu_init_expanded
 
         else:
             assert intermediate_tensors is not None
@@ -537,6 +530,11 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
             torch.arange(vocab_size, dtype=torch.long) % num_experts
         )
 
+        # Learnable mu_init (stored here, outside torch.compile scope)
+        self._has_mu = getattr(config, "use_mu_guidance", False)
+        if self._has_mu and not getattr(config, "disable_mu_guidance", False):
+            self.mu_init = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
+
     def forward(
         self,
         input_ids: torch.Tensor | None,
@@ -551,12 +549,19 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
                 self._zipf_map = self._zipf_map.to(input_ids.device)
             expert_ids = self._zipf_map[input_ids.clamp(0, len(self._zipf_map) - 1)]
 
+        # Expand mu_init for this batch (outside torch.compile)
+        mu_init_expanded = None
+        if self._has_mu and hasattr(self, "mu_init") and input_ids is not None:
+            num_tokens = input_ids.shape[0]
+            mu_init_expanded = self.mu_init.squeeze(0).expand(num_tokens, -1)
+
         hidden_states = self.model(
             input_ids=input_ids,
             positions=positions,
             intermediate_tensors=intermediate_tensors,
             inputs_embeds=inputs_embeds,
             expert_ids=expert_ids,
+            mu_init_expanded=mu_init_expanded,
         )
         return hidden_states
 
@@ -601,6 +606,14 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
 
             # Skip rotary_emb.inv_freq — vLLM recomputes it
             if "rotary_emb.inv_freq" in name:
+                continue
+
+            # mu_init lives in ComplexityForCausalLM (not model.)
+            if ckpt_name == "mu_init":
+                if hasattr(self, "mu_init"):
+                    with torch.no_grad():
+                        self.mu_init.copy_(loaded_weight)
+                    loaded_params.add("mu_init")
                 continue
 
             # Load token_to_expert mapping (Zipf-balanced routing)
