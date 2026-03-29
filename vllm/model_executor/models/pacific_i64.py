@@ -324,17 +324,17 @@ class ComplexityDecoderLayer(nn.Module):
         )
         hidden_states = residual + hidden_states
 
-        # Mu-Guidance
-        mu_current = self.mu_guidance(hidden_states)
-
         # MLP
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         if self.use_token_routed_mlp:
-            hidden_states = self.mlp(hidden_states, token_ids=token_ids, mu=mu_current)
+            hidden_states = self.mlp(hidden_states, token_ids=token_ids, mu=mu_prev)
         else:
             hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
+
+        # Mu-Guidance AFTER MLP — captures expert-specific information
+        mu_current = self.mu_guidance(hidden_states)
 
         return hidden_states, mu_current
 
