@@ -384,6 +384,11 @@ class ComplexityModel(nn.Module):
                 continue
             layer._layer_idx = i
 
+        # Learnable mu_init: gives layer 0 a mu_prev instead of None
+        self._has_mu = getattr(config, "use_mu_guidance", False)
+        if self._has_mu and not getattr(config, "disable_mu_guidance", False):
+            self.mu_init = nn.Parameter(torch.zeros(1, 1, config.hidden_size))
+
         rms_norm_eps = getattr(config, "rms_norm_eps", 1e-6)
         if get_pp_group().is_last_rank:
             self.norm = RMSNorm(config.hidden_size, eps=rms_norm_eps)
@@ -408,6 +413,9 @@ class ComplexityModel(nn.Module):
             else:
                 hidden_states = self.embed_tokens(input_ids)
             mu_prev = None
+            if self._has_mu and hasattr(self, "mu_init"):
+                num_tokens = hidden_states.shape[0]
+                mu_prev = self.mu_init.squeeze(0).expand(num_tokens, -1)
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
