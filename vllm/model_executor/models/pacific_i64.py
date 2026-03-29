@@ -601,7 +601,7 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
             if name == "model.embed_tokens.weight" and name in loaded_params:
                 continue
 
-            # Expert weights — buffer for merging
+            # Expert weights (format A): per-expert separate tensors
             # Pattern: model.layers.X.mlp.experts.E.{gate_proj,up_proj,down_proj}.weight
             if ".mlp.experts." in name:
                 layer_idx = int(name.split(".layers.")[1].split(".")[0])
@@ -612,6 +612,28 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
                 expert_buf.setdefault(layer_idx, {}).setdefault(expert_idx, {})[
                     proj
                 ] = loaded_weight.clone()
+                continue
+
+            # Expert weights (format B): stacked 3D tensors
+            # Checkpoint: gate_proj_w [E, hidden, inter], up_proj_w [E, hidden, inter],
+            #             down_proj_w [E, inter, hidden]
+            # Model expects: gate_up_proj [E, hidden, 2*inter], down_proj [E, inter, hidden]
+            if ".mlp.gate_proj_w" in name or ".mlp.up_proj_w" in name or ".mlp.down_proj_w" in name:
+                layer_idx = int(name.split(".layers.")[1].split(".")[0])
+                buf = expert_buf.setdefault(layer_idx, {})
+                num_e = loaded_weight.shape[0]
+                for e in range(num_e):
+                    e_buf = buf.setdefault(e, {})
+                    if ".gate_proj_w" in name:
+                        e_buf["gate_proj_w"] = loaded_weight[e]  # [hidden, inter]
+                    elif ".up_proj_w" in name:
+                        e_buf["up_proj_w"] = loaded_weight[e]    # [hidden, inter]
+                    elif ".down_proj_w" in name:
+                        e_buf["down_proj_w"] = loaded_weight[e]  # [inter, hidden]
+                continue
+
+            # Shared expert weights — skip (not in vLLM model)
+            if ".mlp.shared_" in name:
                 continue
 
             # Standard parameter loading
@@ -630,20 +652,34 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
 
             num_e = mlp.local_num_experts
             sample = next(iter(experts.values()))
-            full_inter = sample["gate_proj"].shape[0]  # [out_feat, in_feat]
-            hidden = sample["gate_proj"].shape[1]
-            dtype = sample["gate_proj"].dtype
 
-            # gate_up_proj: [E, hidden, 2*full_inter]
-            gate_up_full = torch.zeros(num_e, hidden, 2 * full_inter, dtype=dtype)
-            # down_proj:    [E, full_inter, hidden]
-            down_full = torch.zeros(num_e, full_inter, hidden, dtype=dtype)
+            # Detect format: "gate_proj" (format A, [out, in]) or "gate_proj_w" (format B, [hidden, inter])
+            if "gate_proj_w" in sample:
+                # Format B: checkpoint tensors are [hidden, inter] / [inter, hidden]
+                inter = sample["gate_proj_w"].shape[1]
+                hidden = sample["gate_proj_w"].shape[0]
+                dtype = sample["gate_proj_w"].dtype
 
-            for e_idx, e_w in experts.items():
-                # Linear stores [out, in] → transpose for BMM [in, out]
-                gate_up_full[e_idx, :, :full_inter] = e_w["gate_proj"].T
-                gate_up_full[e_idx, :, full_inter:] = e_w["up_proj"].T
-                down_full[e_idx] = e_w["down_proj"].T
+                gate_up_full = torch.zeros(num_e, hidden, 2 * inter, dtype=dtype)
+                down_full = torch.zeros(num_e, inter, hidden, dtype=dtype)
+
+                for e_idx, e_w in experts.items():
+                    gate_up_full[e_idx, :, :inter] = e_w["gate_proj_w"]   # [hidden, inter]
+                    gate_up_full[e_idx, :, inter:] = e_w["up_proj_w"]     # [hidden, inter]
+                    down_full[e_idx] = e_w["down_proj_w"]                  # [inter, hidden]
+            else:
+                # Format A: per-expert Linear weights [out_feat, in_feat]
+                full_inter = sample["gate_proj"].shape[0]
+                hidden = sample["gate_proj"].shape[1]
+                dtype = sample["gate_proj"].dtype
+
+                gate_up_full = torch.zeros(num_e, hidden, 2 * full_inter, dtype=dtype)
+                down_full = torch.zeros(num_e, full_inter, hidden, dtype=dtype)
+
+                for e_idx, e_w in experts.items():
+                    gate_up_full[e_idx, :, :full_inter] = e_w["gate_proj"].T
+                    gate_up_full[e_idx, :, full_inter:] = e_w["up_proj"].T
+                    down_full[e_idx] = e_w["down_proj"].T
 
             gu_name = f"model.layers.{layer_idx}.mlp.gate_up_proj"
             dn_name = f"model.layers.{layer_idx}.mlp.down_proj"
