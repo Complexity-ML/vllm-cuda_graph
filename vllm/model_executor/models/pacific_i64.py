@@ -417,12 +417,6 @@ class ComplexityModel(nn.Module):
                 num_tokens = hidden_states.shape[0]
                 mu_prev = self.mu_init.squeeze(0).expand(num_tokens, -1)
 
-            # DEBUG: compare with framework reference values
-            _debug_prefill = (num_tokens == 5)
-            if _debug_prefill:
-                logger.info(f"DEBUG PREFILL input_ids: {input_ids.tolist()}")
-                logger.info(f"DEBUG PREFILL Embedding[0,:5]: {hidden_states[0,:5].float().tolist()}")
-                logger.info(f"DEBUG PREFILL mu_init[:5]: {mu_prev[0,:5].float().tolist() if mu_prev is not None else 'None'}")
         else:
             assert intermediate_tensors is not None
             hidden_states = intermediate_tensors["hidden_states"]
@@ -443,10 +437,6 @@ class ComplexityModel(nn.Module):
             if mu_current is not None:
                 mu_prev = mu_current
 
-            # DEBUG: log after every layer during prefill
-            if hidden_states.shape[0] == 5:
-                n = hidden_states[-1,:3].float().tolist()
-                logger.info(f"DEBUG L{i:2d}: {n[0]:+.4f} {n[1]:+.4f} {n[2]:+.4f}")
 
         if not get_pp_group().is_last_rank:
             return IntermediateTensors(
@@ -457,8 +447,6 @@ class ComplexityModel(nn.Module):
             )
 
         hidden_states = self.norm(hidden_states)
-        if hidden_states.shape[0] == 5:
-            logger.info(f"DEBUG PREFILL after norm h[last,:5]: {hidden_states[-1,:5].float().tolist()}")
         return hidden_states
 
     def embed_input_ids(self, input_ids: torch.Tensor) -> torch.Tensor:
