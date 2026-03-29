@@ -83,10 +83,14 @@ class _DeepSlowTokenizer(PreTrainedTokenizer):
         return ()
 
 
+class _DeepFastTokenizer(PreTrainedTokenizerFast):
+    slow_tokenizer_class = _DeepSlowTokenizer
+
+
 # Register with transformers so AutoConfig and AutoTokenizer resolve "deep"
 AutoConfig.register("deep", DeepConfig)
 AutoTokenizer.register(
     DeepConfig,
     slow_tokenizer_class=_DeepSlowTokenizer,
-    fast_tokenizer_class=PreTrainedTokenizerFast,
+    fast_tokenizer_class=_DeepFastTokenizer,
 )
