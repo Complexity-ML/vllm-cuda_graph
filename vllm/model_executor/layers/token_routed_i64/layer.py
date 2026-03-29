@@ -60,6 +60,7 @@ class TokenRoutedMLP(nn.Module):
         intermediate_size: int,
         num_experts: int,
         vocab_size: int,
+        shared_expert: bool = False,
         ep_size: int = 1,
         ep_rank: int = 0,
         prefix: str = "",
@@ -105,6 +106,14 @@ class TokenRoutedMLP(nn.Module):
         self.down_proj = nn.Parameter(
             torch.empty(self.local_num_experts, self.intermediate_per_tp, hidden_size)
         )
+
+        # Shared expert: dense SwiGLU MLP that all tokens pass through
+        self.use_shared_expert = shared_expert
+        if shared_expert:
+            shared_size = self.expert_intermediate_size
+            self.shared_gate = nn.Linear(hidden_size, shared_size, bias=False)
+            self.shared_up = nn.Linear(hidden_size, shared_size, bias=False)
+            self.shared_down = nn.Linear(shared_size, hidden_size, bias=False)
 
         # Mu-guided routing (replicated - small tensor)
         self.mu_router = nn.Linear(hidden_size, num_experts, bias=False)
@@ -183,6 +192,13 @@ class TokenRoutedMLP(nn.Module):
         else:
             # TP path: routing inside custom op (CUDA graph safe)
             output = self._forward_local(x, token_ids, mu)
+
+        # Shared expert: dense SwiGLU applied to all tokens, added to expert output
+        if self.use_shared_expert:
+            shared_out = self.shared_down(
+                F.silu(self.shared_gate(x)) * self.shared_up(x)
+            )
+            output = output + shared_out
 
         # === TP all_reduce (RowParallel equivalent) ===
         if self.tp_size > 1:

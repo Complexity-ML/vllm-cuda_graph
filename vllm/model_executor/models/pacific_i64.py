@@ -296,6 +296,7 @@ class ComplexityDecoderLayer(nn.Module):
                 intermediate_size=config.intermediate_size,
                 num_experts=getattr(config, "num_experts", 4),
                 vocab_size=config.vocab_size,
+                shared_expert=getattr(config, "shared_expert", False),
                 prefix=f"{prefix}.mlp",
             )
         else:
@@ -632,9 +633,8 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
                         e_buf["down_proj_w"] = loaded_weight[e]  # [inter, hidden]
                 continue
 
-            # Shared expert weights — skip (not in vLLM model)
-            if ".mlp.shared_" in name:
-                continue
+            # Shared expert weights — load directly (shared_gate/shared_up/shared_down)
+            # These are standard nn.Linear weights, loaded as normal params below
 
             # Standard parameter loading
             if name not in params_dict:
