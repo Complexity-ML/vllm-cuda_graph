@@ -86,6 +86,7 @@ def i64_token_routed_forward(
     vocab_size: int,
     mu_router_weight: torch.Tensor,
     mu: torch.Tensor,
+    token_to_expert: torch.Tensor,
 ) -> torch.Tensor:
     """
     Custom op entry point — computes routing + expert forward.
@@ -96,7 +97,7 @@ def i64_token_routed_forward(
     """
     # === I64 Routing (inside splitting op = eager) ===
     token_ids_clamped = token_ids.clamp(0, vocab_size - 1)
-    expert_ids = (token_ids_clamped % num_experts).long()
+    expert_ids = token_to_expert[token_ids_clamped]
 
     # Mu-guided bias — always compute (no CPU sync like .any())
     # When mu is zeros, mu_logits is zeros, base_one_hot * 10.0 dominates,
@@ -126,6 +127,7 @@ def i64_token_routed_forward_fake(
     vocab_size: int,
     mu_router_weight: torch.Tensor,
     mu: torch.Tensor,
+    token_to_expert: torch.Tensor,
 ) -> torch.Tensor:
     """Fake impl for torch.compile — returns tensor of correct shape."""
     return torch.empty_like(x)

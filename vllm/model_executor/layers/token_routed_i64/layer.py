@@ -120,9 +120,12 @@ class TokenRoutedMLP(nn.Module):
         nn.init.zeros_(self.mu_router.weight)
 
         # Deterministic I64 token -> expert mapping
-        # NOTE: NOT a buffer — computed on-the-fly via modulo to avoid
-        # vLLM's init_empty_weights() meta-device issue (buffer would be
-        # uninitialized garbage on GPU after weight loading).
+        # Defaults to modulo routing; overwritten by checkpoint if Zipf-balanced.
+        self.register_buffer(
+            "token_to_expert",
+            torch.arange(vocab_size, dtype=torch.long) % num_experts,
+            persistent=False,
+        )
 
         # Init weights
         nn.init.kaiming_uniform_(self.gate_up_proj, a=5**0.5)
@@ -152,6 +155,7 @@ class TokenRoutedMLP(nn.Module):
             self.vocab_size,
             self.mu_router.weight,
             mu,
+            self.token_to_expert,
         )
 
     def forward(
@@ -183,7 +187,7 @@ class TokenRoutedMLP(nn.Module):
         if self.use_ep:
             # EP path: routing must happen here for all-to-all dispatch
             token_ids_clamped = token_ids.clamp(0, self.vocab_size - 1)
-            expert_ids = (token_ids_clamped % self.num_experts).long()
+            expert_ids = self.token_to_expert[token_ids_clamped]
             mu_logits = self.mu_router(mu)
             base_one_hot = F.one_hot(expert_ids, self.num_experts).float()
             combined_logits = base_one_hot * self._BASE_ROUTING_SCALE + mu_logits
