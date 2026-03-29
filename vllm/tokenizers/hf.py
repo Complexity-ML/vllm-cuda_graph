@@ -82,6 +82,29 @@ class CachedHfTokenizer(TokenizerLike):
         **kwargs,
     ) -> HfTokenizer:
         try:
+            # If a tokenizer.json exists and tokenizer_config.json specifies
+            # PreTrainedTokenizerFast, load directly to avoid slow tokenizer
+            # conversion issues with custom model types.
+            import os
+            path_str = str(path_or_repo_id)
+            if (os.path.isdir(path_str)
+                    and os.path.exists(os.path.join(path_str, "tokenizer.json"))):
+                import json
+                tc_path = os.path.join(path_str, "tokenizer_config.json")
+                if os.path.exists(tc_path):
+                    with open(tc_path) as f:
+                        tc = json.load(f)
+                    if tc.get("tokenizer_class") == "PreTrainedTokenizerFast":
+                        from transformers import PreTrainedTokenizerFast
+                        tokenizer = PreTrainedTokenizerFast.from_pretrained(
+                            path_or_repo_id,
+                            *args,
+                            revision=revision,
+                            cache_dir=download_dir,
+                            **kwargs,
+                        )
+                        return get_cached_tokenizer(tokenizer)
+
             tokenizer = AutoTokenizer.from_pretrained(
                 path_or_repo_id,
                 *args,
