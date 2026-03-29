@@ -547,8 +547,9 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
         # Pre-map token IDs to expert IDs via Zipf routing (outside torch.compile)
         expert_ids = None
         if input_ids is not None and hasattr(self, "_zipf_map"):
-            zipf = self._zipf_map.to(input_ids.device)
-            expert_ids = zipf[input_ids.clamp(0, len(zipf) - 1)]
+            if self._zipf_map.device != input_ids.device:
+                self._zipf_map = self._zipf_map.to(input_ids.device)
+            expert_ids = self._zipf_map[input_ids.clamp(0, len(self._zipf_map) - 1)]
 
         hidden_states = self.model(
             input_ids=input_ids,
