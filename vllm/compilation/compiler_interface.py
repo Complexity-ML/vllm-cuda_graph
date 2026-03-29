@@ -413,10 +413,17 @@ class InductorStandaloneAdaptor(CompilerInterface):
 
         if is_compile_cache_enabled(compiler_config):
             if not is_saveable_2_10(compiled_graph):
-                logger.warning(
-                    "Compiled artifact is not serializable — skipping cache save."
+                raise RuntimeError(
+                    "The compiled artifact is not serializable. This usually means "
+                    "that the model code has something that is not serializable "
+                    "by torch.compile in it. You can fix this by either "
+                    "figuring out what is not serializable and rewriting it, "
+                    "filing a bug report, "
+                    "or suppressing this error by "
+                    "disabling vLLM's compilation cache via "
+                    "VLLM_DISABLE_COMPILE_CACHE=1 "
+                    "(this will greatly increase vLLM server warm start times)."
                 )
-                return compiled_graph, None
             compiled_graph.save(path=path, format=self.save_format)
             compilation_counter.num_compiled_artifacts_saved += 1
         return compiled_graph, (key, path)
