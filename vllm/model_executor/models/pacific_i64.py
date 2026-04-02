@@ -297,6 +297,7 @@ class ComplexityDecoderLayer(nn.Module):
                 num_experts=getattr(config, "num_experts", 4),
                 vocab_size=config.vocab_size,
                 shared_expert=getattr(config, "shared_expert", False),
+                shared_intermediate_size=getattr(config, "shared_intermediate_size", 0),
                 prefix=f"{prefix}.mlp",
             )
         else:

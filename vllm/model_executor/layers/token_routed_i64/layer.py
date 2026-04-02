@@ -61,6 +61,7 @@ class TokenRoutedMLP(nn.Module):
         num_experts: int,
         vocab_size: int,
         shared_expert: bool = False,
+        shared_intermediate_size: int = 0,
         ep_size: int = 1,
         ep_rank: int = 0,
         prefix: str = "",
@@ -110,7 +111,7 @@ class TokenRoutedMLP(nn.Module):
         # Shared expert: dense SwiGLU MLP that all tokens pass through
         self.use_shared_expert = shared_expert
         if shared_expert:
-            shared_size = self.expert_intermediate_size
+            shared_size = shared_intermediate_size if shared_intermediate_size > 0 else self.expert_intermediate_size
             self.shared_gate = nn.Linear(hidden_size, shared_size, bias=False)
             self.shared_up = nn.Linear(hidden_size, shared_size, bias=False)
             self.shared_down = nn.Linear(shared_size, hidden_size, bias=False)
