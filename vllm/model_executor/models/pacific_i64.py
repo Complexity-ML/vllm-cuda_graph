@@ -329,7 +329,7 @@ class ComplexityDecoderLayer(nn.Module):
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
         if self.use_token_routed_mlp:
-            hidden_states = self.mlp(hidden_states, token_ids=token_ids, mu=mu_prev)
+            hidden_states = self.mlp(hidden_states, token_ids=token_ids)
         else:
             hidden_states = self.mlp(hidden_states)
         hidden_states = residual + hidden_states
