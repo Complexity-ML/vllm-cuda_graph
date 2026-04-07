@@ -610,7 +610,8 @@ class ComplexityForCausalLM(nn.Module, SupportsPP):
                 continue
 
             # mu_init lives in ComplexityForCausalLM (not model.)
-            if ckpt_name == "mu_init":
+            # Checkpoints may store it as "mu_init" or "model.mu_init"
+            if ckpt_name == "mu_init" or ckpt_name == "model.mu_init":
                 if hasattr(self, "mu_init"):
                     with torch.no_grad():
                         self.mu_init.copy_(loaded_weight)
